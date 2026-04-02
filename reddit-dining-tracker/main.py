@@ -1,8 +1,12 @@
+import os
 import time
+from dotenv import load_dotenv
 from scraper import get_reddit_client, fetch_posts as fetch_reddit_posts
 from scrapers.pagesix import fetch_posts as fetch_pagesix_posts
 from scrapers.eater import fetch_posts as fetch_eater_posts
 from scrapers.justjared import fetch_posts as fetch_justjared_posts
+from scrapers.tmz import fetch_posts as fetch_tmz_posts
+from scrapers.deuxmoi import fetch_posts as fetch_deuxmoi_posts
 from extractor import extract_sighting
 from storage import init_db, save_sighting, already_scraped
 
@@ -38,18 +42,23 @@ def process_posts(posts, new_sightings):
             skipped_duplicate += 1
             continue
 
-        sighting = extract_sighting(post)
+        result = extract_sighting(post)
 
-        if sighting is None:
+        if result is None:
             skipped_no_sighting += 1
             continue
 
-        inserted = save_sighting(post["post_id"], sighting, post["source_url"])
-        if inserted:
-            sighting["source_url"] = post["source_url"]
-            sighting["source"] = post.get("subreddit", "unknown")
-            new_sightings.append(sighting)
-            print(f"    ✓ Found: {sighting['celebrity']} @ {sighting['restaurant']}")
+        # Normalize to list (extractor can return a single dict or a list)
+        sightings_list = result if isinstance(result, list) else [result]
+
+        for idx, sighting in enumerate(sightings_list):
+            pid = f"{post['post_id']}-{idx}" if len(sightings_list) > 1 else post["post_id"]
+            inserted = save_sighting(pid, sighting, post["source_url"])
+            if inserted:
+                sighting["source_url"] = post["source_url"]
+                sighting["source"] = post.get("subreddit", "unknown")
+                new_sightings.append(sighting)
+                print(f"    ✓ Found: {sighting['celebrity']} @ {sighting['restaurant']}")
 
         # Be polite to the Anthropic API
         time.sleep(0.5)
@@ -58,6 +67,7 @@ def process_posts(posts, new_sightings):
 
 
 def run():
+    load_dotenv()
     print("Initializing database...")
     init_db()
 
@@ -65,16 +75,19 @@ def run():
     total_dupes = 0
     total_skipped = 0
 
-    # --- Reddit ---
-    print("\n📡 Reddit")
-    try:
-        reddit = get_reddit_client()
-        reddit_posts = fetch_reddit_posts(reddit)
-        d, s = process_posts(reddit_posts, new_sightings)
-        total_dupes += d
-        total_skipped += s
-    except Exception as e:
-        print(f"  Reddit failed: {e}")
+    # --- Reddit (optional — requires API credentials) ---
+    if os.getenv("REDDIT_CLIENT_ID"):
+        print("\n📡 Reddit")
+        try:
+            reddit = get_reddit_client()
+            reddit_posts = fetch_reddit_posts(reddit)
+            d, s = process_posts(reddit_posts, new_sightings)
+            total_dupes += d
+            total_skipped += s
+        except Exception as e:
+            print(f"  Reddit failed: {e}")
+    else:
+        print("\n📡 Reddit — skipped (no REDDIT_CLIENT_ID set)")
 
     # --- Page Six ---
     print("\n📰 Page Six")
@@ -105,6 +118,26 @@ def run():
         total_skipped += s
     except Exception as e:
         print(f"  Just Jared failed: {e}")
+
+    # --- TMZ ---
+    print("\n📺 TMZ")
+    try:
+        tmz_posts = fetch_tmz_posts()
+        d, s = process_posts(tmz_posts, new_sightings)
+        total_dupes += d
+        total_skipped += s
+    except Exception as e:
+        print(f"  TMZ failed: {e}")
+
+    # --- DeuxMoi ---
+    print("\n💅 DeuxMoi")
+    try:
+        dm_posts = fetch_deuxmoi_posts()
+        d, s = process_posts(dm_posts, new_sightings)
+        total_dupes += d
+        total_skipped += s
+    except Exception as e:
+        print(f"  DeuxMoi failed: {e}")
 
     print(f"\nDone. {total_dupes} duplicates skipped, {total_skipped} posts had no sighting.")
     print_summary(new_sightings)
